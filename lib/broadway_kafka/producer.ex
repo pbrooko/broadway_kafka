@@ -167,6 +167,7 @@ defmodule BroadwayKafka.Producer do
   @impl GenStage
   def init(opts) do
     client = opts[:client] || BroadwayKafka.BrodClient
+    # IO.inspect(opts, label: "opts")
 
     case client.init(opts) do
       {:error, message} ->
@@ -175,6 +176,10 @@ defmodule BroadwayKafka.Producer do
       {:ok, config} ->
         {_, producer_name} = Process.info(self(), :registered_name)
         client_id = Module.concat([producer_name, Client])
+        IO.inspect(client_id, label: "Client_id")
+
+        # IO.inspect(opts, label: "Init Opts")
+        # IO.inspect(config, label: "Init Config")
 
         state = %{
           client: client,
@@ -197,17 +202,22 @@ defmodule BroadwayKafka.Producer do
   end
 
   defp allocator_names(broadway_config) do
+    # IO.inspect(broadway_config, label: "Allocator Names - Broadway Config")
     broadway_name = broadway_config[:name]
     broadway_index = broadway_config[:index]
 
+    {_, process_config} = broadway_config[:producer][:module]
+    process_namer = process_config[:process_namer]
+
     processors_allocators =
       for {name, _} <- broadway_config[:processors] do
-        Module.concat([broadway_name, "Allocator_processor_#{name}"])
+        process_namer.("Allocator_processor_#{name}")
+        |> IO.inspect(label: "Process Allocators")
       end
 
     batchers_allocators =
       for {name, _} <- broadway_config[:batchers] do
-        Module.concat([broadway_name, "Allocator_batcher_consumer_#{name}"])
+        process_namer.("Allocator_batcher_consumer_#{name}")
       end
 
     {broadway_index, processors_allocators, batchers_allocators}
@@ -372,11 +382,17 @@ defmodule BroadwayKafka.Producer do
   end
 
   @impl Producer
-  def prepare_for_start(_module, opts) do
+  def prepare_for_start(module, opts) do
     broadway_name = opts[:name]
 
     producers_concurrency = opts[:producer][:concurrency]
     [first_processor_entry | other_processors_entries] = opts[:processors]
+
+    # Name processes using the Broadway.process_name/2 API
+    process_namer = fn name -> module.process_name(broadway_name, name) end
+    {mod, module_opts} = opts[:producer][:module]
+    updated_module_opts = Keyword.put(module_opts, :process_namer, process_namer)
+    updated_producer_opts = Keyword.put(opts[:producer], :module, {mod, updated_module_opts})
 
     {allocator, updated_processor_entry} =
       build_allocator_spec_and_consumer_entry(
@@ -384,7 +400,8 @@ defmodule BroadwayKafka.Producer do
         :processors,
         "processor",
         producers_concurrency,
-        first_processor_entry
+        first_processor_entry,
+        process_namer
       )
 
     {allocators, updated_batchers_entries} =
@@ -395,7 +412,8 @@ defmodule BroadwayKafka.Producer do
             :batchers,
             "batcher_consumer",
             producers_concurrency,
-            entry
+            entry,
+            process_namer
           )
 
         {[allocator | allocators], [updated_entry | entries]}
@@ -405,6 +423,8 @@ defmodule BroadwayKafka.Producer do
       opts
       |> Keyword.put(:processors, [updated_processor_entry | other_processors_entries])
       |> Keyword.put(:batchers, updated_batchers_entries)
+      |> Keyword.put(:producer, updated_producer_opts)
+      # |> IO.inspect(label: "Updated opts")
 
     {allocators, updated_opts}
   end
@@ -526,13 +546,14 @@ defmodule BroadwayKafka.Producer do
          group,
          prefix,
          producers_concurrency,
-         consumer_entry
+         consumer_entry,
+         process_namer
        ) do
     {consumer_name, consumer_config} = consumer_entry
     validate_partition_by(group, consumer_name, consumer_config)
 
     consumer_concurrency = consumer_config[:concurrency]
-    allocator_name = Module.concat([broadway_name, "Allocator_#{prefix}_#{consumer_name}"])
+    allocator_name = process_namer.("Allocator_#{prefix}_#{consumer_name}")
     partition_by = &Allocator.fetch!(allocator_name, {&1.metadata.topic, &1.metadata.partition})
     new_config = Keyword.put(consumer_config, :partition_by, partition_by)
 

@@ -26,7 +26,7 @@ defmodule BroadwayKafka.MixProject do
 
   defp deps do
     [
-      {:broadway, "~> 0.6.0"},
+      {:broadway, git: "https://github.com/dashbitco/broadway.git", tag: "master"},
       {:brod, "~> 3.10"},
       {:ex_doc, ">= 0.19.0", only: :docs}
     ]
